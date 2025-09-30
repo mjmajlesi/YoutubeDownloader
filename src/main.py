@@ -4,6 +4,7 @@
 
 from pytubefix import YouTube
 from pathlib import Path
+from tqdm import tqdm
 
 
 class YoutubeDownloader:
@@ -12,6 +13,7 @@ class YoutubeDownloader:
     self.Only_audio = Only_audio
     self.path_output = path_output or Path().cwd()
     self.quality = quality or "highest"
+    self.pbar = None
 
   def Download(self):
     yt = YouTube(
@@ -23,18 +25,29 @@ class YoutubeDownloader:
        stream = yt.streams.filter(only_audio=True).first()
     else:
       if self.quality == "highest":
-        stream = yt.streams.filter(progressive= True , file_extension='mp4').get_highest_resolution()
+        stream = yt.streams.filter(progressive=True, file_extension='mp4').get_highest_resolution()
       else:
         stream = yt.streams.filter(res=self.quality, progressive=True , file_extension='mp4').first()
 
+    if stream is None:
+      print(f"No stream found with quality {self.quality}. Available qualities:")
+      available_qualities = [s.resolution for s in yt.streams.filter(progressive=True, file_extension='mp4')]
+      print(", ".join(available_qualities))
+      return
+
+    self.pbar = tqdm(
+      total= stream.filesize ,
+      desc="Downloading... " ,
+      unit="B",
+      unit_scale=True,
+      colour="green",
+    )
     stream.download(output_path=self.path_output)
-    print("Download Completed!")
 
   def on_progress(self, stream, chunk, bytes_remaining):
-    total_size = stream.filesize
-    bytes_downloaded = total_size - bytes_remaining
-    percentage_of_completion = bytes_downloaded / total_size * 100
-    print(f"Downloading... {percentage_of_completion:.2f}% completed", end='\r')
+    current = stream.filesize - bytes_remaining
+    self.pbar.update(current - self.pbar.n)
+
 
   def on_completed(self, steam , file_path):
     print()
