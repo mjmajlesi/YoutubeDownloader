@@ -13,12 +13,12 @@ if st.button("Download"):
         if file_path:
             with open(file_path, "rb") as file:
                 st.download_button(
-                    label="Download Video",
+                    label="⬇️ Download Video",
                     data=file,
                     file_name=file_path.split("/")[-1],
                     mime="video/mp4"
                 )
         else:
-            st.error("Failed to download the video. Please check the URL and try again.")
+            st.error("❌ Failed to download the video. Please check the URL and try again.")
     else:
         st.error("Please enter a valid YouTube URL.")
