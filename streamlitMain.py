@@ -36,16 +36,14 @@ if download_mode == "Video":
         if st.button("⬇️ Download Video"):
             with st.spinner("Downloading..."):
                 downloader = YoutubeDownloader(url, quality=quality)
-                file_path = downloader.Download()
-                if file_path:
-                    with open(file_path, "rb") as file:
-                        st.download_button(
-                            label="Save File",
-                            data=file,
-                            file_name=file_path.split("/")[-1],
-                            mime="video/mp4",
-                            key="video_download_btn",
-                        )
+                buffer = downloader.Download()
+                if buffer:
+                    st.download_button(
+                        label="Save File",
+                        data=buffer,
+                        file_name="video.mp4",
+                        mime="video/mp4"
+                    )
                 else:
                     st.error("❌ Failed to download the video.")
     elif url:
@@ -61,14 +59,19 @@ elif download_mode == "Playlist":
 
     if url and quality:
         if st.button("⬇️ Download Playlist"):
-            downloader = YoutubeDownloader(url, quality=quality)
-            files = downloader.DownloadPlaylist()
-            if files:
-                st.success(f"✅ Downloaded {len(files)} videos successfully!")
-            else:
-                st.error("❌ Failed to download the playlist.")
-    elif url:
-        st.info("ℹ️ Please select a quality first.")
+            with st.spinner("Downloading playlist..."):
+                downloader = YoutubeDownloader(url, quality=quality)
+                zip_buffer = downloader.DownloadPlaylist()
+                if zip_buffer:
+                    st.download_button(
+                        label="💾 Save Playlist ZIP",
+                        data=zip_buffer,
+                        file_name="playlist_download.zip",
+                        mime="application/zip"
+                    )
+                else:
+                    st.error("❌ Failed to download the playlist.")
+
 
 
 # ------------------------------------------
