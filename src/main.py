@@ -47,9 +47,10 @@ class YoutubeDownloader:
                 return None
 
             # دانلود به فایل موقت
-            video_path = video_stream.download(filename="temp_video.mp4")
-            audio_path = audio_stream.download(filename="temp_audio.mp4")
-            output_path = "merged_temp.mp4"
+            video_path = video_stream.download(output_path="/tmp", filename="temp_video.mp4", max_retries=3)
+            audio_path = audio_stream.download(output_path="/tmp", filename="temp_audio.mp4")
+            output_path = "/tmp/merged_temp.mp4"
+
 
             cmd = [
                 "ffmpeg", "-y",

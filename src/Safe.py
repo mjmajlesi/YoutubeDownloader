@@ -2,6 +2,9 @@ from pytubefix import YouTube
 from urllib.error import URLError
 import re, time
 import streamlit as st
+from pytubefix.request import default_range_size
+
+default_range_size = 1048576
 
 def safe_filename(name: str) -> str:
     """حذف کاراکترهای غیرمجاز از اسم فایل برای ویندوز"""
