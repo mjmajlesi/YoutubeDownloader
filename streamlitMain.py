@@ -1,6 +1,5 @@
 import streamlit as st
 from src.main import YoutubeDownloader
-
 st.set_page_config(page_title="YouTube Downloader", page_icon="🎬", layout="centered")
 st.title(":zap: YouTube Downloader")
 
