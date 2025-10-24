@@ -2,6 +2,9 @@ import streamlit as st
 from src.main import YoutubeDownloader
 st.set_page_config(page_title="YouTube Downloader", page_icon="🎬", layout="centered")
 st.title(":zap: YouTube Downloader")
+import requests
+import base64
+import time
 
 # انتخاب نوع دانلود
 download_mode = st.radio(
@@ -43,6 +46,28 @@ if download_mode == "Video":
                         file_name="video.mp4",
                         mime="video/mp4"
                     )
+                    st.write("")
+                    # Offer an optional direct link (uploads file to transfer.sh) so external download managers like IDM can download it.
+                    if st.button("🔗 Get direct link (for external download managers)"):
+                        with st.spinner("Uploading to get direct link..."):
+                            try:
+                                # use a sane filename
+                                filename = f"video_{int(time.time())}.mp4"
+                                # transfer.sh accepts PUT uploads to https://transfer.sh/<filename>
+                                url = f"https://transfer.sh/{filename}"
+                                # buffer may be a BytesIO or file-like
+                                buffer.seek(0)
+                                resp = requests.put(url, data=buffer.getvalue(), timeout=120)
+                                if resp.status_code in (200, 201):
+                                    link = resp.text.strip()
+                                    st.success("Direct link created — click to open or copy to clipboard")
+                                    st.markdown(f"[Open direct link]({link})")
+                                    st.write("Copy this URL and paste it into IDM or your download manager:")
+                                    st.code(link)
+                                else:
+                                    st.error(f"❌ Upload failed (status {resp.status_code}): {resp.text}")
+                            except Exception as e:
+                                st.error(f"❌ Could not create direct link: {e}")
                 else:
                     st.error("❌ Failed to download the video.")
     elif url:
