@@ -4,6 +4,10 @@ import subprocess
 import os, re, time, io
 from urllib.error import URLError
 from src.Safe import safe_filename, safe_youtube, is_playlist_url
+import shutil
+import tempfile
+import uuid
+import logging
 
 class YoutubeDownloader:
     def __init__(self, url, Only_audio=False, quality=None):
@@ -45,34 +49,60 @@ class YoutubeDownloader:
             if not video_stream or not audio_stream:
                 st.error(f"❌ No stream found for quality {self.quality}")
                 return None
+            # For adaptive (separate audio/video) we must merge with ffmpeg.
+            # If ffmpeg isn't present on the host, fail gracefully and inform the user.
+            if shutil.which("ffmpeg") is None:
+                st.error(
+                    "❌ FFmpeg is not installed on the server. Merging separate audio/video streams requires FFmpeg. "
+                    "Please install FFmpeg on the host (Streamlit Cloud: add a packages.txt with 'ffmpeg') or choose a progressive quality."
+                )
+                return None
 
-            # دانلود به فایل موقت
-            video_path = video_stream.download(output_path="/tmp", filename="temp_video.mp4", max_retries=3)
-            audio_path = audio_stream.download(output_path="/tmp", filename="temp_audio.mp4")
-            output_path = "/tmp/merged_temp.mp4"
+            # create unique temporary filenames in the system temp dir
+            tmpdir = tempfile.gettempdir()
+            vid_name = f"temp_video_{int(time.time())}_{uuid.uuid4().hex}.mp4"
+            aud_name = f"temp_audio_{int(time.time())}_{uuid.uuid4().hex}.mp4"
+            out_name = f"merged_{int(time.time())}_{uuid.uuid4().hex}.mp4"
 
+            try:
+                video_path = video_stream.download(output_path=tmpdir, filename=vid_name, max_retries=3)
+                audio_path = audio_stream.download(output_path=tmpdir, filename=aud_name, max_retries=3)
+                output_path = os.path.join(tmpdir, out_name)
 
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", video_path,
-                "-i", audio_path,
-                "-c", "copy",
-                output_path
-            ]
-            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", video_path,
+                    "-i", audio_path,
+                    "-c", "copy",
+                    output_path
+                ]
 
-            # خواندن به حافظه
-            with open(output_path, "rb") as f:
-                file_data = f.read()
+                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                if proc.returncode != 0:
+                    err = proc.stderr.decode(errors="ignore")
+                    logging.error("FFmpeg merge failed: %s", err)
+                    st.error(f"❌ FFmpeg failed to merge files: {err}")
+                    # cleanup partial files
+                    for _f in [video_path, audio_path]:
+                        try:
+                            os.remove(_f)
+                        except Exception:
+                            pass
+                    return None
 
-            # پاکسازی فایل‌ها
-            for f in [video_path, audio_path, output_path]:
-                try:
-                    os.remove(f)
-                except:
-                    pass
+                # read merged file into memory
+                with open(output_path, "rb") as f:
+                    file_data = f.read()
 
-            # بازگشت داده به صورت BytesIO
+            finally:
+                # cleanup temp files if they exist
+                for _f in [locals().get('video_path'), locals().get('audio_path'), locals().get('output_path')]:
+                    try:
+                        if _f and os.path.exists(_f):
+                            os.remove(_f)
+                    except Exception:
+                        pass
+
             buffer = io.BytesIO(file_data)
             buffer.seek(0)
             return buffer
