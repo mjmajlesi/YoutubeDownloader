@@ -2,7 +2,7 @@ from pytubefix import YouTube, Playlist
 import streamlit as st
 import subprocess
 import os, re, time, io, shutil, tempfile, uuid, logging
-from .safe import safe_filename, safe_youtube, is_playlist_url
+from src.Safe import safe_filename, safe_youtube, is_playlist_url
 
 class YoutubeDownloader:
     def __init__(self, url):
