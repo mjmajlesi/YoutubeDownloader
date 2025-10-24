@@ -2,7 +2,7 @@ from pytubefix import YouTube, Playlist
 import streamlit as st
 import subprocess
 import os, re, time, io, shutil, tempfile, uuid, logging
-from src.Safe import safe_filename, safe_youtube, is_playlist_url
+from src.Safe import safe_filename, safe_youtube, is_playlist_url # NOTE: Fixed relative import
 
 class YoutubeDownloader:
     def __init__(self, url):
@@ -19,7 +19,9 @@ class YoutubeDownloader:
             try:
                 self.pl = Playlist(self.url)
                 # Fetch first video to get a 'yt' object for info
-                self.yt = safe_youtube(self.pl.video_urls[0])
+                # We also need .videos for the new playlist logic
+                st.write(f"Loading playlist... found {len(self.pl.videos)} videos.")
+                self.yt = self.pl.videos[0] 
             except Exception as e:
                 st.error(f"❌ Failed to load playlist: {e}")
                 self.pl = None
@@ -175,59 +177,7 @@ class YoutubeDownloader:
         if self.st_progress_bar:
             self.st_progress_bar.progress(100, text="Download complete! ✅")
         return buffer
-
-    # ---------------------- PLAYLIST DOWNLOAD ----------------------
-    def DownloadPlaylist(self, quality, only_audio=False, st_progress_bar=None):
-        if not self.pl:
-            st.error("❌ No playlist object available.")
-            return None
-
-        video_urls = list(self.pl.video_urls or [])
-        if not video_urls:
-            st.error("❌ No videos found in playlist.")
-            return None
-
-        import zipfile
-        zip_buffer = io.BytesIO()
-
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for idx, video_url in enumerate(video_urls, 1):
-                progress_text = f"Downloading {idx}/{len(video_urls)}..."
-                st.write(f"▶️ {progress_text} {video_url}")
-                if st_progress_bar:
-                    percent = int(idx / len(video_urls) * 100)
-                    st_progress_bar.progress(percent, text=progress_text)
-                    
-                try:
-                    yd_video = YoutubeDownloader(video_url)
-                    if not yd_video.yt:
-                        st.error(f"❌ Failed to load video {idx}. Skipping.")
-                        continue
-
-                    title = yd_video.yt.title
-                    
-                    if only_audio:
-                        video_buffer = yd_video.DownloadAudio(quality=quality, st_progress_bar=None)
-                        ext = ".mp3"
-                        mime = "audio/mpeg"
-                    else:
-                        video_buffer = yd_video.Download(quality=quality, st_progress_bar=None)
-                        ext = ".mp4"
-                        mime = "video/mp4"
-
-                    if video_buffer:
-                        clean_title = safe_filename(f"{idx:02d} - {title}{ext}")
-                        zf.writestr(clean_title, video_buffer.getvalue())
-                        
-                except Exception as e:
-                    st.error(f"❌ Error on video {idx} ({video_url}): {e}")
-
-        if st_progress_bar:
-            st_progress_bar.progress(100, "Playlist Zipped! ✅")
-            
-        zip_buffer.seek(0)
-        return zip_buffer
-
+        
     # ---------------------- UTILITIES ----------------------
     def get_video_qualities(self):
         if not self.yt:
@@ -251,7 +201,7 @@ class YoutubeDownloader:
 
     def get_direct_link(self, quality, only_audio=False):
         """
-        NEW: Gets the direct stream URL.
+        Gets the direct stream URL.
         This is the fix for the IDM problem.
         """
         if not self.yt:
