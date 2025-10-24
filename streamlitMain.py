@@ -1,6 +1,6 @@
 import streamlit as st
-from src.main import YoutubeDownloader
-from src.safe import safe_filename
+from .main import YoutubeDownloader
+from .safe import safe_filename
 import time
 
 # --- Page Config ---
