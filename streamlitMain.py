@@ -35,20 +35,31 @@ if download_mode == "Video":
     # فقط وقتی کیفیت انتخاب شده دکمه نشون داده میشه
     if quality:
         st.write("")  # فاصله کوچک برای زیبایی
-        if st.button("⬇️ Download Video"):
+        
+        # Initialize session state for video buffer
+        if 'video_buffer' not in st.session_state:
+            st.session_state.video_buffer = None
+        
+        # Download button to prepare the buffer
+        if st.button("⬇️ Download Video", key="start_download"):
             with st.spinner("Downloading..."):
                 downloader = YoutubeDownloader(url, quality=quality)
-                buffer = downloader.Download()
-                if buffer:
-                    st.download_button(
-                        label="Save File",
-                        data=buffer,
-                        file_name="video.mp4",
-                        mime="video/mp4"
-                    )
-                    st.write("")
-                    # Offer an optional direct link (uploads file to transfer.sh) so external download managers like IDM can download it.
-                    if st.button("🔗 Get direct link (for external download managers)"):
+                st.session_state.video_buffer = downloader.Download()
+        
+        # Show download button if buffer is ready
+        if st.session_state.video_buffer:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    label="💾 Save Video",
+                    data=st.session_state.video_buffer,
+                    file_name=f"video_{quality}.mp4",
+                    mime="video/mp4",
+                    key="download_video"
+                )
+            with col2:
+                # Offer an optional direct link (uploads file to transfer.sh) so external download managers like IDM can download it.
+                if st.button("🔗 Get direct link (for external download managers)"):
                         with st.spinner("Uploading to get direct link..."):
                             try:
                                 # use a sane filename
