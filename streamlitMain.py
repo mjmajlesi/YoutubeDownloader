@@ -56,7 +56,7 @@ with tab1:
             
             col1, col2 = st.columns([1, 2])
             with col1:
-                st.image(yt.thumbnail_url, use_column_width=True)
+                st.image(yt.thumbnail_url, use_container_width=True)
             with col2:
                 st.subheader(yt.title)
                 st.caption(f"by {yt.author} | {yt.views:,} views | Length: {time.strftime('%H:%M:%S', time.gmtime(yt.length))}")
@@ -191,7 +191,7 @@ with tab3:
             
             col1, col2 = st.columns([1, 2])
             with col1:
-                st.image(yt.thumbnail_url, use_column_width=True)
+                st.image(yt.thumbnail_url, use_container_width=True)
             with col2:
                 st.subheader(yt.title)
                 st.caption(f"by {yt.author} | {yt.views:,} views")
