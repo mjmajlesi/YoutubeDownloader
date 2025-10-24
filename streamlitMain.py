@@ -43,8 +43,16 @@ if download_mode == "Video":
         # Download button to prepare the buffer
         if st.button("⬇️ Download Video", key="start_download"):
             with st.spinner("Downloading..."):
-                downloader = YoutubeDownloader(url, quality=quality)
-                st.session_state.video_buffer = downloader.Download()
+                try:
+                    downloader = YoutubeDownloader(url, quality=quality)
+                    buffer = downloader.Download()
+                    if buffer:
+                        st.session_state.video_buffer = buffer
+                        st.success("✅ Video downloaded successfully!")
+                    else:
+                        st.error("❌ Failed to download the video.")
+                except Exception as e:
+                    st.error(f"❌ Download error: {str(e)}")
         
         # Show download button if buffer is ready
         if st.session_state.video_buffer:
@@ -59,28 +67,32 @@ if download_mode == "Video":
                 )
             with col2:
                 # Offer an optional direct link (uploads file to transfer.sh) so external download managers like IDM can download it.
-                if st.button("🔗 Get direct link (for external download managers)"):
-                        with st.spinner("Uploading to get direct link..."):
-                            try:
-                                # use a sane filename
-                                filename = f"video_{int(time.time())}.mp4"
-                                # transfer.sh accepts PUT uploads to https://transfer.sh/<filename>
-                                url = f"https://transfer.sh/{filename}"
-                                # buffer may be a BytesIO or file-like
-                                buffer.seek(0)
-                                resp = requests.put(url, data=buffer.getvalue(), timeout=120)
-                                if resp.status_code in (200, 201):
-                                    link = resp.text.strip()
-                                    st.success("Direct link created — click to open or copy to clipboard")
-                                    st.markdown(f"[Open direct link]({link})")
-                                    st.write("Copy this URL and paste it into IDM or your download manager:")
-                                    st.code(link)
-                                else:
-                                    st.error(f"❌ Upload failed (status {resp.status_code}): {resp.text}")
-                            except Exception as e:
-                                st.error(f"❌ Could not create direct link: {e}")
-                else:
-                    st.error("❌ Failed to download the video.")
+                if st.button("🔗 Get direct link (for external download managers)", key="get_direct_link"):
+                    with st.spinner("Uploading to get direct link..."):
+                        try:
+                            # use a sane filename
+                            filename = f"video_{int(time.time())}.mp4"
+                            # transfer.sh accepts PUT uploads to https://transfer.sh/<filename>
+                            transfer_url = f"https://transfer.sh/{filename}"
+                            # Use the buffer from session state
+                            st.session_state.video_buffer.seek(0)
+                            resp = requests.put(
+                                transfer_url, 
+                                data=st.session_state.video_buffer.getvalue(), 
+                                timeout=120
+                            )
+                            if resp.status_code in (200, 201):
+                                link = resp.text.strip()
+                                st.success("✅ Direct link created — click to open or copy to clipboard")
+                                st.markdown(f"[Open direct link]({link})")
+                                st.write("Copy this URL and paste it into IDM or your download manager:")
+                                st.code(link)
+                            else:
+                                st.error(f"❌ Upload failed (status {resp.status_code}): {resp.text}")
+                        except Exception as e:
+                            st.error(f"❌ Could not create direct link: {str(e)}")
+    elif url:
+        st.info("ℹ️ Please select a quality first.")
     elif url:
         st.info("ℹ️ Please select a quality first.")
 
