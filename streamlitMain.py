@@ -1,5 +1,5 @@
 import streamlit as st
-from src.main import YoutubeDownloader # Import from our main.py
+from src.main import YoutubeDownloader
 from src.Safe import safe_filename
 import time
 

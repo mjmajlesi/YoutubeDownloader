@@ -1,16 +1,26 @@
+"""
+    YoutubeDownloader class for downloading YouTube videos and audio,
+    handling both progressive and adaptive streams with FFmpeg merging.
+    Author: Mohammad Javad Majlesi
+"""
+
+# imports dependencies
 from pytubefix import YouTube, Playlist
 import streamlit as st
 import subprocess
 import os, re, time, io, shutil, tempfile, uuid, logging
-from src.Safe import safe_filename, safe_youtube, is_playlist_url # NOTE: Fixed relative import
+from src.Safe import safe_filename, safe_youtube, is_playlist_url
+
 
 class YoutubeDownloader:
-    def __init__(self, url):
+    def __init__(self, url : str):
+        """
+        YoutubeDownloader constructor.
+        :param url: The URL of the YouTube video or playlist
+        """
         self.url = url
         self.st_progress_bar = None
         self.last_percent = 0
-        
-        # تشخیص نوع URL (playlist یا video)
         self.is_playlist = is_playlist_url(self.url)
         self.yt = None
         self.pl = None
@@ -32,8 +42,14 @@ class YoutubeDownloader:
                 st.error(f"❌ Failed to load video: {e}")
                 self.yt = None
 
-    # ---------------------- CALLBACKS ----------------------
-    def on_progress(self, stream, chunk, bytes_remaining):
+
+    def on_progress(self, stream : Stream, chunk: bytes, bytes_remaining: int):
+        """
+        Progress callback for pytube.
+        :param stream: The stream being downloaded
+        :param chunk: The chunk of data being downloaded
+        :param bytes_remaining: The number of bytes remaining to be downloaded
+        """
         if not self.st_progress_bar:
             return
             
@@ -47,14 +63,19 @@ class YoutubeDownloader:
         # Avoid flooding streamlit with updates
         if percent > self.last_percent:
             self.last_percent = percent
-            try:
-                self.st_progress_bar.progress(percent, text=f"Downloading... {percent}%")
-            except Exception:
-                # Handle cases where the progress bar might be gone
-                pass
+            self.st_progress_bar.progress(percent, text=f"Downloading... {percent}%")
 
-    # ---------------------- VIDEO DOWNLOAD ----------------------
+
     def Download(self, quality, st_progress_bar=None):
+        """
+        Downloads the video at the specified quality.
+        :param quality: The quality of the video to download
+        :type quality: str
+        :param st_progress_bar: The Streamlit progress bar to update, defaults to None
+        :type st_progress_bar: st.progress, optional
+        :return: The downloaded video as a BytesIO buffer
+        :rtype: io.BytesIO
+        """
         if not self.yt:
             st.error("❌ No video object available to download.")
             return None
@@ -84,7 +105,13 @@ class YoutubeDownloader:
             return buffer
 
     def _download_adaptive(self, quality):
-        """Internal helper for FFmpeg merging."""
+        """
+        Downloads and merges adaptive video and audio streams using FFmpeg.
+        :param quality: The quality of the video to download
+        :type quality: str
+        :return: The merged video as a BytesIO buffer
+        :rtype: io.BytesIO
+        """
         video_stream = self.yt.streams.filter(adaptive=True, res=quality, mime_type="video/mp4").first()
         audio_stream = self.yt.streams.filter(adaptive=True, mime_type="audio/mp4").order_by("abr").desc().first()
         
@@ -147,8 +174,17 @@ class YoutubeDownloader:
                 except Exception as e:
                     logging.warning(f"Failed to remove temp file {_f}: {e}")
 
-    # ---------------------- AUDIO DOWNLOAD ----------------------
+
     def DownloadAudio(self, quality, st_progress_bar=None):
+        """
+        Downloads the audio at the specified quality.
+        :param quality: The quality of the audio to download
+        :type quality: str
+        :param st_progress_bar: The Streamlit progress bar to update, defaults to None
+        :type st_progress_bar: st.progress, optional
+        :return: The downloaded audio as a BytesIO buffer
+        :rtype: io.BytesIO
+        """
         if not self.yt:
             st.error("❌ No video object available to download audio.")
             return None
@@ -178,8 +214,15 @@ class YoutubeDownloader:
             self.st_progress_bar.progress(100, text="Download complete! ✅")
         return buffer
         
-    # ---------------------- UTILITIES ----------------------
+
     def get_video_qualities(self):
+
+        """
+            Gets the available video qualities.
+            :return: A list of video quality strings
+            :rtype: list[str]
+        """
+
         if not self.yt:
             return []
         qualities = set()
@@ -188,7 +231,13 @@ class YoutubeDownloader:
                 qualities.add(stream.resolution)
         return sorted(qualities, key=lambda x: int(x.replace('p', '')), reverse=True)
 
+
     def get_audio_qualities(self):
+        """
+        Gets the available audio qualities.
+        :return: A list of audio quality strings
+        :rtype: list[str]
+        """
         if not self.yt:
             return []
         qualities = set()
