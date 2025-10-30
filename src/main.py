@@ -43,7 +43,7 @@ class YoutubeDownloader:
                 self.yt = None
 
 
-    def on_progress(self, stream : Stream, chunk: bytes, bytes_remaining: int):
+    def on_progress(self, stream , chunk: bytes, bytes_remaining: int):
         """
         Progress callback for pytube.
         :param stream: The stream being downloaded
