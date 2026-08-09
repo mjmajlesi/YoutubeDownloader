@@ -1,280 +1,292 @@
 """
-    YoutubeDownloader class for downloading YouTube videos and audio,
-    handling both progressive and adaptive streams with FFmpeg merging.
+    YoutubeDownloader - A clean, robust downloader using yt-dlp CLI via subprocess.
+    Bypasses YouTube bot-protection (403 errors) using player client rotation.
     Author: Mohammad Javad Majlesi
 """
 
-# imports dependencies
-from pytubefix import YouTube, Playlist
-import streamlit as st
+import io
+import os
+import re
+import time
+import glob
+import shutil
+import tempfile
+import logging
 import subprocess
-import os, re, time, io, shutil, tempfile, uuid, logging
-from src.Safe import safe_filename, safe_youtube, is_playlist_url
+import json
+
+try:
+    import streamlit as st
+except ImportError:
+    st = None
+
+from src.Safe import safe_filename, get_ffmpeg_path, has_ffmpeg
+
+
+class VideoInfo:
+    """Represents metadata for a single YouTube video."""
+    def __init__(self, info_dict):
+        self._info = info_dict or {}
+        self.title = self._info.get("title", "Unknown Title")
+        self.video_id = self._info.get("id") or self._info.get("video_id")
+        self.thumbnail_url = self._info.get("thumbnail") or ""
+        self.author = self._info.get("uploader") or self._info.get("channel") or "Unknown"
+        self.views = self._info.get("view_count") or 0
+        self.length = self._info.get("duration") or 0
+        self.watch_url = self._info.get("webpage_url") or f"https://www.youtube.com/watch?v={self.video_id}" if self.video_id else ""
+
+    def __str__(self):
+        return self.title
+
+
+class PlaylistInfo:
+    """Represents a YouTube playlist."""
+    def __init__(self, title, videos):
+        self.title = title or "Playlist"
+        self.videos = videos or []
+        self.author = "YouTube"
+
+    def __len__(self):
+        return len(self.videos)
 
 
 class YoutubeDownloader:
-    def __init__(self, url : str):
-        """
-        YoutubeDownloader constructor.
-        :param url: The URL of the YouTube video or playlist
-        """
+    def __init__(self, url: str):
         self.url = url
         self.st_progress_bar = None
-        self.last_percent = 0
-        self.is_playlist = is_playlist_url(self.url)
+        self.is_playlist = self._check_playlist_url(self.url)
         self.yt = None
         self.pl = None
-        
-        if self.is_playlist:
-            try:
-                self.pl = Playlist(self.url)
-                # Fetch first video to get a 'yt' object for info
-                # We also need .videos for the new playlist logic
-                st.write(f"Loading playlist... found {len(self.pl.videos)} videos.")
-                self.yt = self.pl.videos[0] 
-            except Exception as e:
-                st.error(f"❌ Failed to load playlist: {e}")
-                self.pl = None
-        else:
-            try:
-                self.yt = safe_youtube(self.url)
-            except Exception as e:
-                st.error(f"❌ Failed to load video: {e}")
-                self.yt = None
+        self.info = None
+        self.error = None
 
-
-    def on_progress(self, stream , chunk: bytes, bytes_remaining: int):
-        """
-        Progress callback for pytube.
-        :param stream: The stream being downloaded
-        :param chunk: The chunk of data being downloaded
-        :param bytes_remaining: The number of bytes remaining to be downloaded
-        """
-        if not self.st_progress_bar:
+        if not self.url:
+            self.error = "Please provide a valid YouTube URL."
             return
-            
-        total = getattr(stream, 'filesize', None) or getattr(stream, 'filesize_approx', 0)
-        if total == 0:
-            return
-            
-        downloaded = total - bytes_remaining
-        percent = int(downloaded / total * 100)
-        
-        # Avoid flooding streamlit with updates
-        if percent > self.last_percent:
-            self.last_percent = percent
-            self.st_progress_bar.progress(percent, text=f"Downloading... {percent}%")
-
-
-    def Download(self, quality, st_progress_bar=None):
-        """
-        Downloads the video at the specified quality.
-        :param quality: The quality of the video to download
-        :type quality: str
-        :param st_progress_bar: The Streamlit progress bar to update, defaults to None
-        :type st_progress_bar: st.progress, optional
-        :return: The downloaded video as a BytesIO buffer
-        :rtype: io.BytesIO
-        """
-        if not self.yt:
-            st.error("❌ No video object available to download.")
-            return None
-            
-        # Register progress bar and reset percent
-        self.st_progress_bar = st_progress_bar
-        self.last_percent = 0
-        self.yt.register_on_progress_callback(self.on_progress)
-
-        if quality == "highest":
-            stream = self.yt.streams.get_highest_resolution()
-        else:
-            stream = self.yt.streams.filter(progressive=True, res=quality, file_extension="mp4").first()
-
-        # Adaptive case (video + audio merge)
-        if stream is None:
-            st.write("ℹ️ Selected quality is not progressive, attempting to merge audio/video...")
-            return self._download_adaptive(quality)
-            
-        # Progressive case
-        else:
-            buffer = io.BytesIO()
-            stream.stream_to_buffer(buffer)
-            buffer.seek(0)
-            if self.st_progress_bar:
-                self.st_progress_bar.progress(100, text="Download complete! ✅")
-            return buffer
-
-    def _download_adaptive(self, quality):
-        """
-        Downloads and merges adaptive video and audio streams using FFmpeg.
-        :param quality: The quality of the video to download
-        :type quality: str
-        :return: The merged video as a BytesIO buffer
-        :rtype: io.BytesIO
-        """
-        video_stream = self.yt.streams.filter(adaptive=True, res=quality, mime_type="video/mp4").first()
-        audio_stream = self.yt.streams.filter(adaptive=True, mime_type="audio/mp4").order_by("abr").desc().first()
-        
-        if not video_stream or not audio_stream:
-            st.error(f"❌ No adaptive streams found for {quality}.")
-            return None
-
-        if shutil.which("ffmpeg") is None:
-            st.error(
-                "❌ FFmpeg is not installed. This quality requires merging audio and video. "
-                "If running on Streamlit Cloud, add 'ffmpeg' to your packages.txt file."
-            )
-            return None
-
-        tmpdir = tempfile.gettempdir()
-        vid_name = f"temp_video_{uuid.uuid4().hex}.mp4"
-        aud_name = f"temp_audio_{uuid.uuid4().hex}.mp4"
-        out_name = f"merged_{uuid.uuid4().hex}.mp4"
-        
-        video_path, audio_path, output_path = None, None, None
 
         try:
-            st.write("Downloading video track...")
-            video_path = video_stream.download(output_path=tmpdir, filename=vid_name, max_retries=3)
-            st.write("Downloading audio track...")
-            audio_path = audio_stream.download(output_path=tmpdir, filename=aud_name, max_retries=3)
-            output_path = os.path.join(tmpdir, out_name)
+            if self.is_playlist:
+                self._load_playlist()
+            else:
+                self._load_video()
+        except Exception as e:
+            self.error = str(e)
+            if st is not None:
+                st.error(f"❌ Failed to load: {self.error}")
 
-            st.write("Merging files with FFmpeg...")
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", video_path,
-                "-i", audio_path,
-                "-c", "copy",
-                output_path
-            ]
-            
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            
-            if proc.returncode != 0:
-                logging.error("FFmpeg merge failed: %s", proc.stderr)
-                st.error(f"❌ FFmpeg failed: {proc.stderr[:500]}...")
-                return None
+    @staticmethod
+    def _check_playlist_url(url: str) -> bool:
+        return 'list=' in url or '/playlist' in url
 
-            with open(output_path, "rb") as f:
-                file_data = f.read()
-                
-            buffer = io.BytesIO(file_data)
-            buffer.seek(0)
-            if self.st_progress_bar:
-                self.st_progress_bar.progress(100, text="Merge complete! ✅")
-            return buffer
-            
-        finally:
-            # Cleanup temp files
-            for _f in [video_path, audio_path, output_path]:
-                try:
-                    if _f and os.path.exists(_f):
-                        os.remove(_f)
-                except Exception as e:
-                    logging.warning(f"Failed to remove temp file {_f}: {e}")
+    def _extract_ytdlp_info(self, url, flat=True):
+        """Fetches metadata using yt-dlp JSON extraction."""
+        cmd = [
+            "yt-dlp",
+            "--quiet",
+            "--no-warnings",
+            "-J",
+        ]
+        if flat:
+            cmd.append("--flat-playlist")
+        cmd.append(url)
 
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+        if proc.returncode != 0:
+            # Retry without flat flag if extraction failed
+            if flat:
+                return self._extract_ytdlp_info(url, flat=False)
+            raise RuntimeError(proc.stderr.strip() or f"yt-dlp exited with code {proc.returncode}")
 
-    def DownloadAudio(self, quality, st_progress_bar=None):
-        """
-        Downloads the audio at the specified quality.
-        :param quality: The quality of the audio to download
-        :type quality: str
-        :param st_progress_bar: The Streamlit progress bar to update, defaults to None
-        :type st_progress_bar: st.progress, optional
-        :return: The downloaded audio as a BytesIO buffer
-        :rtype: io.BytesIO
-        """
-        if not self.yt:
-            st.error("❌ No video object available to download audio.")
-            return None
+        try:
+            return json.loads(proc.stdout)
+        except Exception as e:
+            raise RuntimeError(f"Failed to parse yt-dlp output: {e}")
 
-        # Register progress bar and reset percent
-        self.st_progress_bar = st_progress_bar
-        self.last_percent = 0
-        self.yt.register_on_progress_callback(self.on_progress)
+    def _load_video(self):
+        info = self._extract_ytdlp_info(self.url, flat=False)
+        self.info = info
+        self.yt = VideoInfo(info)
 
-        if quality == "highest":
-            stream = self.yt.streams.get_audio_only()
-        else:
-             stream = self.yt.streams.filter(only_audio=True, abr=quality).first()
-             
-        if not stream:
-            st.error(f"❌ No audio stream found for {quality}. Falling back to default.")
-            stream = self.yt.streams.get_audio_only()
-            if not stream:
-                st.error("❌ No audio streams found at all.")
-                return None
+    def _load_playlist(self):
+        info = self._extract_ytdlp_info(self.url, flat=True)
+        title = info.get("title", "Untitled Playlist")
 
-        buffer = io.BytesIO()
-        stream.stream_to_buffer(buffer)
-        buffer.seek(0)
-        
-        if self.st_progress_bar:
-            self.st_progress_bar.progress(100, text="Download complete! ✅")
-        return buffer
-        
+        entries = info.get("entries", [])
+        videos = []
+        for entry in entries:
+            if not entry:
+                continue
+            video_id = entry.get("id") or entry.get("video_id")
+            if not video_id:
+                m = re.search(r"[?&]v=([^&]+)", str(entry.get("url", "")))
+                video_id = m.group(1) if m else None
+            if not video_id:
+                continue
+
+            # Extract thumbnail url from flat entries
+            thumb_url = ""
+            thumbnails = entry.get("thumbnails", [])
+            if thumbnails:
+                thumb_url = thumbnails[-1].get("url", "")
+            if not thumb_url and video_id:
+                thumb_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+
+            videos.append(VideoInfo({
+                "title": entry.get("title", "Untitled"),
+                "id": video_id,
+                "thumbnail": thumb_url,
+                "uploader": entry.get("uploader", entry.get("channel", "")),
+                "view_count": entry.get("view_count", 0),
+                "duration": entry.get("duration", 0),
+                "webpage_url": f"https://www.youtube.com/watch?v={video_id}",
+            }))
+
+        self.pl = PlaylistInfo(title, videos)
+        if videos:
+            self.yt = videos[0]
+            # Fetch first video's full formats to use as a proxy for qualities
+            try:
+                self.info = self._extract_ytdlp_info(self.yt.watch_url, flat=False)
+            except Exception:
+                pass
 
     def get_video_qualities(self):
+        """Returns available video resolutions (e.g. ['1080p', '720p', ...])."""
+        if not self.info:
+            return ["highest"]
 
-        """
-            Gets the available video qualities.
-            :return: A list of video quality strings
-            :rtype: list[str]
-        """
+        heights = set()
+        for fmt in self.info.get("formats", []):
+            if fmt.get("vcodec", "none") != "none" and fmt.get("height"):
+                heights.add(int(fmt["height"]))
 
-        if not self.yt:
-            return []
-        qualities = set()
-        for stream in self.yt.streams.filter(file_extension="mp4"):
-            if stream.resolution:
-                qualities.add(stream.resolution)
-        return sorted(qualities, key=lambda x: int(x.replace('p', '')), reverse=True)
-
+        if heights:
+            return sorted(
+                (f"{h}p" for h in heights if h > 0),
+                key=lambda x: int(x.replace("p", "")),
+                reverse=True
+            )
+        return ["highest"]
 
     def get_audio_qualities(self):
-        """
-        Gets the available audio qualities.
-        :return: A list of audio quality strings
-        :rtype: list[str]
-        """
-        if not self.yt:
-            return []
-        qualities = set()
-        for stream in self.yt.streams.filter(only_audio=True, file_extension="mp4"):
-             if stream.abr:
-                qualities.add(stream.abr)
-        # Add a 'highest' option
-        qualities = ['highest'] + sorted(list(qualities), key=lambda x: int(x.replace('kbps', '')), reverse=True)
-        return list(dict.fromkeys(qualities)) # Remove duplicates
+        """Returns available audio bitrates (e.g. ['highest', '128kbps', ...])."""
+        if not self.info:
+            return ["highest"]
 
-    def get_direct_link(self, quality, only_audio=False):
-        """
-        Gets the direct stream URL.
-        This is the fix for the IDM problem.
-        """
-        if not self.yt:
-            return None, "Video object not loaded."
-            
+        abrs = set()
+        for fmt in self.info.get("formats", []):
+            if fmt.get("acodec", "none") != "none" and fmt.get("abr"):
+                abrs.add(int(fmt["abr"]))
+
+        if abrs:
+            return ["highest"] + [
+                f"{v}kbps" for v in sorted(abrs, reverse=True)
+            ]
+        return ["highest"]
+
+    def Download(self, quality, st_progress_bar=None, only_audio=False):
+        """Downloads the video/audio to a BytesIO buffer."""
+        self.st_progress_bar = st_progress_bar
+        out_dir = tempfile.mkdtemp(prefix="ytdlp_")
+
         try:
+            fmt = self._select_ytdlp_format(quality, only_audio)
+            ff = get_ffmpeg_path()
+
+            cmd = [
+                "yt-dlp",
+                "--no-playlist",
+                "--restrict-filenames",
+                "--format", fmt,
+                "-o", os.path.join(out_dir, "%(id)s.%(ext)s"),
+                "--merge-output-format", "mp4",
+                "--add-header", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            ]
+
             if only_audio:
-                if quality == 'highest':
-                    stream = self.yt.streams.get_audio_only()
-                else:
-                    stream = self.yt.streams.filter(only_audio=True, abr=quality).first()
+                if ff:
+                    cmd += [
+                        "-x",
+                        "--audio-format", "mp3",
+                        "--audio-quality", "192",
+                        "--ffmpeg-location", os.path.dirname(ff),
+                    ]
             else:
-                if quality == "highest":
-                    stream = self.yt.streams.get_highest_resolution()
-                else:
-                    # Try progressive first
-                    stream = self.yt.streams.filter(progressive=True, res=quality, file_extension="mp4").first()
-                
-                if not stream: # Try adaptive
-                    stream = self.yt.streams.filter(adaptive=True, res=quality, mime_type="video/mp4").first()
-            
-            if stream:
-                return stream.url, None
-            else:
-                return None, f"No stream found for {quality}."
+                if ff:
+                    cmd += ["--ffmpeg-location", os.path.dirname(ff)]
+
+            cmd.append(self.url)
+
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace"
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(proc.stderr.strip() or f"yt-dlp exited with code {proc.returncode}")
+
+            # Locate the produced file
+            produced = self._find_produced_file(out_dir)
+            if not produced:
+                files_found = os.listdir(out_dir) if os.path.exists(out_dir) else []
+                raise RuntimeError(f"Could not locate downloaded file. Files in temp: {files_found}")
+
+            with open(produced, "rb") as f:
+                data = f.read()
+
+            buffer = io.BytesIO(data)
+            buffer.seek(0)
+
+            if self.st_progress_bar:
+                try:
+                    self.st_progress_bar.progress(100, text="Download complete! ✅")
+                except Exception:
+                    pass
+
+            return buffer
+
         except Exception as e:
-            return None, f"Error getting link: {str(e)}"
+            if st is not None:
+                st.error(f"❌ yt-dlp download failed: {e}")
+            return None
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+    def DownloadAudio(self, quality, st_progress_bar=None):
+        return self.Download(quality, st_progress_bar=st_progress_bar, only_audio=True)
+
+    def _select_ytdlp_format(self, quality, only_audio):
+        if only_audio:
+            if quality in ("highest", "best"):
+                return "bestaudio/best"
+            kbps = int(quality.replace("kbps", "").replace("Kbps", ""))
+            return f"bestaudio[abr<={kbps}]/bestaudio/best"
+
+        if quality in ("highest", "best"):
+            return "bestvideo+bestaudio/best"
+
+        h = quality.replace("p", "").replace("P", "")
+        if h.isdigit():
+            h = int(h)
+            return f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
+        return "bestvideo+bestaudio/best"
+
+    def _find_produced_file(self, out_dir):
+        files = []
+        for root, dirs, fnames in os.walk(out_dir):
+            for f in fnames:
+                if not f.endswith(('.part', '.ytdl')):
+                    files.append(os.path.join(root, f))
+        if not files:
+            return None
+        return max(files, key=os.path.getsize)
