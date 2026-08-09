@@ -192,7 +192,7 @@ class YoutubeDownloader:
         return ["highest"]
 
     def Download(self, quality, st_progress_bar=None, only_audio=False):
-        """Downloads the video/audio to a BytesIO buffer."""
+        """Downloads the video/audio to a BytesIO buffer with real-time progress."""
         self.st_progress_bar = st_progress_bar
         out_dir = tempfile.mkdtemp(prefix="ytdlp_")
 
@@ -204,6 +204,7 @@ class YoutubeDownloader:
                 "yt-dlp",
                 "--no-playlist",
                 "--restrict-filenames",
+                "--newline",  # Ensures progress is printed on newlines
                 "--format", fmt,
                 "-o", os.path.join(out_dir, "%(id)s.%(ext)s"),
                 "--merge-output-format", "mp4",
@@ -224,16 +225,58 @@ class YoutubeDownloader:
 
             cmd.append(self.url)
 
-            proc = subprocess.run(
+            # Spawn process to stream output
+            proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
                 encoding="utf-8",
-                errors="replace"
+                errors="replace",
+                bufsize=1
             )
+
+            progress_pattern = re.compile(
+                r"\[download\]\s+(\d+(?:\.\d+)?)%\s+of\s+(~?\s*[\d\.]+\w+)\s+at\s+([\d\.]+\w+/s|\w+/s)\s+ETA\s+([\d:]+)"
+            )
+
+            stderr_lines = []
+            for line in proc.stdout:
+                line_str = line.strip()
+                m = progress_pattern.search(line_str)
+                if m:
+                    pct, size, speed, eta = m.groups()
+                    if self.st_progress_bar:
+                        try:
+                            # Clamp percentage between 0 and 98 to keep 100 for final merge/file writing status
+                            val = min(98, int(float(pct)))
+                            self.st_progress_bar.progress(
+                                val,
+                                text=f"Downloading: {pct}% | Size: {size} | Speed: {speed} | ETA: {eta}"
+                            )
+                        except Exception:
+                            pass
+                elif "[Merger]" in line_str or "Merging formats" in line_str:
+                    if self.st_progress_bar:
+                        try:
+                            self.st_progress_bar.progress(99, text="Merging video and audio tracks...")
+                        except Exception:
+                            pass
+                elif "[ExtractAudio]" in line_str or "Extracting audio" in line_str:
+                    if self.st_progress_bar:
+                        try:
+                            self.st_progress_bar.progress(99, text="Extracting and converting audio to MP3...")
+                        except Exception:
+                            pass
+
+                if "ERROR:" in line_str or "unavailable" in line_str.lower():
+                    stderr_lines.append(line_str)
+
+            proc.wait()
+
             if proc.returncode != 0:
-                raise RuntimeError(proc.stderr.strip() or f"yt-dlp exited with code {proc.returncode}")
+                err_msg = "\n".join(stderr_lines) if stderr_lines else f"yt-dlp exited with code {proc.returncode}"
+                raise RuntimeError(err_msg)
 
             # Locate the produced file
             produced = self._find_produced_file(out_dir)
