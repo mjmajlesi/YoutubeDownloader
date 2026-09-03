@@ -79,35 +79,56 @@ class YoutubeDownloader:
         return 'list=' in url or '/playlist' in url
 
     def _extract_ytdlp_info(self, url, flat=True):
-        """Fetches metadata using yt-dlp JSON extraction."""
-        cmd = [
+        """Fetches metadata using yt-dlp JSON extraction with fallback."""
+        base_cmd = [
             "yt-dlp",
             "--quiet",
             "--no-warnings",
             "-J",
         ]
         if flat:
-            cmd.append("--flat-playlist")
-        cmd.append(url)
+            base_cmd.append("--flat-playlist")
+        base_cmd.append(url)
 
-        proc = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace"
-        )
-        if proc.returncode != 0:
-            # Retry without flat flag if extraction failed
-            if flat:
-                return self._extract_ytdlp_info(url, flat=False)
-            raise RuntimeError(proc.stderr.strip() or f"yt-dlp exited with code {proc.returncode}")
-
-        try:
-            return json.loads(proc.stdout)
-        except Exception as e:
-            raise RuntimeError(f"Failed to parse yt-dlp output: {e}")
+        # Try default client first, then fallback clients if YouTube blocks
+        clients = [None, "tv", "mweb", "android"]
+        last_err = None
+        for client in clients:
+            cmd = base_cmd.copy()
+            if client:
+                # Inject extractor-args before the URL
+                cmd.insert(-1, "--extractor-args")
+                cmd.insert(-1, f"youtube:player_client={client}")
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace"
+            )
+            if proc.returncode == 0:
+                try:
+                    return json.loads(proc.stdout)
+                except Exception as e:
+                    last_err = f"Failed to parse yt-dlp output: {e}"
+                    continue
+            last_err = proc.stderr.strip() or f"yt-dlp exited with code {proc.returncode}"
+            # If flat extraction failed, try without flat flag (original logic)
+            if flat and client is None:
+                try:
+                    return self._extract_ytdlp_info(url, flat=False)
+                except Exception as e2:
+                    last_err = str(e2)
+            # Only retry with next client if error looks like a block/403/SABR-reload
+            err_low = last_err.lower()
+            if any(x.lower() in err_low for x in ["403", "Forbidden", "Sign in", "confirm you're not a bot", "unable to download", "needs to be reloaded", "reload", "sabr"]):
+                continue
+            # For other errors, still try next client once
+            if client is None:
+                continue
+            break
+        raise RuntimeError(last_err or "yt-dlp failed to extract info")
 
     def _load_video(self):
         info = self._extract_ytdlp_info(self.url, flat=False)
@@ -191,8 +212,80 @@ class YoutubeDownloader:
             ]
         return ["highest"]
 
+    def _build_download_cmd(self, fmt, out_dir, only_audio, ff, client=None):
+        cmd = [
+            "yt-dlp",
+            "--no-playlist",
+            "--restrict-filenames",
+            "--newline",
+            "--format", fmt,
+            "-o", os.path.join(out_dir, "%(id)s.%(ext)s"),
+            "--merge-output-format", "mp4",
+            "--add-header", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        ]
+        if client:
+            cmd += ["--extractor-args", f"youtube:player_client={client}"]
+        if only_audio:
+            if ff:
+                cmd += [
+                    "-x",
+                    "--audio-format", "mp3",
+                    "--audio-quality", "192",
+                    "--ffmpeg-location", os.path.dirname(ff),
+                ]
+        else:
+            if ff:
+                cmd += ["--ffmpeg-location", os.path.dirname(ff)]
+        cmd.append(self.url)
+        return cmd
+
+    def _run_download_with_progress(self, cmd):
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1
+        )
+        progress_pattern = re.compile(
+            r"\[download\]\s+(\d+(?:\.\d+)?)%\s+of\s+(~?\s*[\d\.]+\w+)\s+at\s+([\d\.]+\w+/s|\w+/s)\s+ETA\s+([\d:]+)"
+        )
+        stderr_lines = []
+        for line in proc.stdout:
+            line_str = line.strip()
+            m = progress_pattern.search(line_str)
+            if m:
+                pct, size, speed, eta = m.groups()
+                if self.st_progress_bar:
+                    try:
+                        val = min(98, int(float(pct)))
+                        self.st_progress_bar.progress(
+                            val,
+                            text=f"Downloading: {pct}% | Size: {size} | Speed: {speed} | ETA: {eta}"
+                        )
+                    except Exception:
+                        pass
+            elif "[Merger]" in line_str or "Merging formats" in line_str:
+                if self.st_progress_bar:
+                    try:
+                        self.st_progress_bar.progress(99, text="Merging video and audio tracks...")
+                    except Exception:
+                        pass
+            elif "[ExtractAudio]" in line_str or "Extracting audio" in line_str:
+                if self.st_progress_bar:
+                    try:
+                        self.st_progress_bar.progress(99, text="Extracting and converting audio to MP3...")
+                    except Exception:
+                        pass
+            if "ERROR:" in line_str or "unavailable" in line_str.lower() or "403" in line_str or "Forbidden" in line_str or "needs to be reloaded" in line_str or "reload" in line_str.lower():
+                stderr_lines.append(line_str)
+        proc.wait()
+        return proc.returncode, stderr_lines
+
     def Download(self, quality, st_progress_bar=None, only_audio=False):
-        """Downloads the video/audio to a BytesIO buffer with real-time progress."""
+        """Downloads the video/audio to a BytesIO buffer with real-time progress and 403 fallback."""
         self.st_progress_bar = st_progress_bar
         out_dir = tempfile.mkdtemp(prefix="ytdlp_")
 
@@ -200,83 +293,46 @@ class YoutubeDownloader:
             fmt = self._select_ytdlp_format(quality, only_audio)
             ff = get_ffmpeg_path()
 
-            cmd = [
-                "yt-dlp",
-                "--no-playlist",
-                "--restrict-filenames",
-                "--newline",  # Ensures progress is printed on newlines
-                "--format", fmt,
-                "-o", os.path.join(out_dir, "%(id)s.%(ext)s"),
-                "--merge-output-format", "mp4",
-                "--add-header", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            ]
-
-            if only_audio:
-                if ff:
-                    cmd += [
-                        "-x",
-                        "--audio-format", "mp3",
-                        "--audio-quality", "192",
-                        "--ffmpeg-location", os.path.dirname(ff),
-                    ]
-            else:
-                if ff:
-                    cmd += ["--ffmpeg-location", os.path.dirname(ff)]
-
-            cmd.append(self.url)
-
-            # Spawn process to stream output
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1
-            )
-
-            progress_pattern = re.compile(
-                r"\[download\]\s+(\d+(?:\.\d+)?)%\s+of\s+(~?\s*[\d\.]+\w+)\s+at\s+([\d\.]+\w+/s|\w+/s)\s+ETA\s+([\d:]+)"
-            )
-
-            stderr_lines = []
-            for line in proc.stdout:
-                line_str = line.strip()
-                m = progress_pattern.search(line_str)
-                if m:
-                    pct, size, speed, eta = m.groups()
-                    if self.st_progress_bar:
-                        try:
-                            # Clamp percentage between 0 and 98 to keep 100 for final merge/file writing status
-                            val = min(98, int(float(pct)))
-                            self.st_progress_bar.progress(
-                                val,
-                                text=f"Downloading: {pct}% | Size: {size} | Speed: {speed} | ETA: {eta}"
-                            )
-                        except Exception:
-                            pass
-                elif "[Merger]" in line_str or "Merging formats" in line_str:
-                    if self.st_progress_bar:
-                        try:
-                            self.st_progress_bar.progress(99, text="Merging video and audio tracks...")
-                        except Exception:
-                            pass
-                elif "[ExtractAudio]" in line_str or "Extracting audio" in line_str:
-                    if self.st_progress_bar:
-                        try:
-                            self.st_progress_bar.progress(99, text="Extracting and converting audio to MP3...")
-                        except Exception:
-                            pass
-
-                if "ERROR:" in line_str or "unavailable" in line_str.lower():
-                    stderr_lines.append(line_str)
-
-            proc.wait()
-
-            if proc.returncode != 0:
-                err_msg = "\n".join(stderr_lines) if stderr_lines else f"yt-dlp exited with code {proc.returncode}"
-                raise RuntimeError(err_msg)
+            # Try default client first, then fallbacks if YouTube returns 403/Forbidden
+            clients = [None, "tv", "mweb", "android", "ios"]
+            last_err = None
+            for client in clients:
+                # Rebuild cmd for each client attempt
+                cmd = self._build_download_cmd(fmt, out_dir, only_audio, ff, client=client)
+                # Clean any partial files from previous attempt
+                for f in os.listdir(out_dir):
+                    try:
+                        os.remove(os.path.join(out_dir, f))
+                    except OSError:
+                        pass
+                returncode, stderr_lines = self._run_download_with_progress(cmd)
+                if returncode == 0:
+                    # Verify file actually exists before declaring success
+                    if self._find_produced_file(out_dir):
+                        last_err = None
+                        break
+                    last_err = "Download finished but no file was produced"
+                    continue
+                err_msg = "\n".join(stderr_lines) if stderr_lines else f"yt-dlp exited with code {returncode}"
+                last_err = err_msg
+                # Only retry with next client if error looks like a block/SABR
+                err_low2 = err_msg.lower()
+                is_block = any(x.lower() in err_low2 for x in ["403", "Forbidden", "Sign in", "confirm you're not a bot", "unable to download video data", "Video unavailable", "needs to be reloaded", "reload", "sabr"])
+                if is_block and client is not None and client != clients[-1]:
+                    # Also try a more permissive format on fallback clients (ios/android often lack high-res mp4)
+                    if quality not in ("highest", "best") and client in ("android", "ios"):
+                        fmt = "bestvideo+bestaudio/best"
+                    continue
+                if is_block and client is None:
+                    continue
+                # Non-block error: don't keep retrying
+                if not is_block:
+                    break
+            if last_err is not None:
+                # After all retries, give a helpful Persian/English hint
+                raise RuntimeError(
+                    last_err + "\n\n💡 راه‌حل: یوتیوب درخواست را بلاک کرده (403). لطفاً yt-dlp را آپدیت کنید: pip install -U yt-dlp  |  اگر روی سرور/Streamlit Cloud هستید IP دیتاسنتر بلاک است، از VPN یا اجرای لوکال استفاده کنید."
+                )
 
             # Locate the produced file
             produced = self._find_produced_file(out_dir)
