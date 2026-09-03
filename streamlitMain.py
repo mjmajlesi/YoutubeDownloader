@@ -3,11 +3,18 @@ import time
 import tempfile
 import streamlit as st
 
-# --- Startup yt-dlp Auto-Update (similar to reclip) ---
+# --- Startup yt-dlp Auto-Update (similar to reclip) + Deno check ---
+import subprocess
+import shutil
+
 if 'ytdlp_updated' not in st.session_state:
     try:
-        import subprocess
-        # Run pip update quietly in background at launch
+        # yt-dlp now requires a JS runtime (deno/node) for signature deciphering
+        if shutil.which("deno") is None and shutil.which("node") is None:
+            try:
+                st.toast("⚠️ yt-dlp recommends deno/node for reliable downloads. Some videos may show 'needs to be reloaded' without it.", icon="⚠️")
+            except Exception:
+                pass
         subprocess.run(["pip", "install", "-q", "-U", "yt-dlp"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         st.session_state.ytdlp_updated = True
     except Exception:
