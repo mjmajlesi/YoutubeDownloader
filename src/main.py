@@ -86,6 +86,11 @@ class YoutubeDownloader:
             "--no-warnings",
             "-J",
         ]
+        # SABR fix for Streamlit Cloud: yt-dlp now needs a JS runtime (node/deno) to decipher signatures
+        for rt in ("deno", "node"):
+            if shutil.which(rt):
+                base_cmd.extend(["--js-runtimes", rt])
+                break
         if flat:
             base_cmd.append("--flat-playlist")
         base_cmd.append(url)
@@ -223,6 +228,10 @@ class YoutubeDownloader:
             "--merge-output-format", "mp4",
             "--add-header", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         ]
+        for rt in ("deno", "node"):
+            if shutil.which(rt):
+                cmd.extend(["--js-runtimes", rt])
+                break
         if client:
             cmd += ["--extractor-args", f"youtube:player_client={client}"]
         if only_audio:
