@@ -45,24 +45,6 @@ streamlit run streamlitMain.py
 > `winget install DenoLand.Deno` or `winget install OpenJS.NodeJS` (Windows) /
 > `brew install deno` (macOS) / `sudo apt install nodejs` (Linux). The app auto-detects `deno`/`node` and passes `--js-runtimes`.
 
-## ☁️ Deploy your own copy
-
-### Streamlit Community Cloud (easiest — this repo is already there)
-
-1. Fork this repo.
-2. Go to [share.streamlit.io](https://share.streamlit.io) → *New app* → pick your fork, branch `main`, file `streamlitMain.py`.
-3. Deploy — `packages.txt` (`ffmpeg` + `nodejs`) and `requirements.txt` are picked up automatically. No secrets needed.
-
-Live demo of this repo: **https://youtubedownloader13579.streamlit.app/**
-
-### Hugging Face Spaces / any Docker host
-
-```bash
-docker build -t ytdownloader .
-docker run -p 8501:8501 ytdownloader
-# or: docker run -p 8501:8501 ghcr.io/mjmajlesi/youtubedownloader
-```
-
 ## 🗂️ Project structure
 
 ```
@@ -119,9 +101,3 @@ streamlit run streamlitMain.py
 ```
 
 برای پایداری بیشتر یک JS runtime نصب کنید: `winget install DenoLand.Deno` یا `winget install OpenJS.NodeJS`.
-
-### دیپلوی روی Streamlit Cloud
-
-همین ریپو را Fork کنید و در `share.streamlit.io` یک اپ جدید با فایل `streamlitMain.py` بسازید — `packages.txt` به‌صورت خودکار `ffmpeg` و `nodejs` را نصب می‌کند.
-
-دموی همین ریپو: **https://youtubedownloader13579.streamlit.app/**
